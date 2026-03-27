@@ -12,7 +12,7 @@ jobs:
     - name: Build
       run: dotnet publish OwenStChecker.csproj -c Release -r win-x64 --self-contained false -o ./publish
     - name: Upload Artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: OwenStChecker
         path: ./publish/OwenStChecker.exe
