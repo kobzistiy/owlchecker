@@ -2,46 +2,41 @@ using System;
 using System.Reflection;
 using System.IO;
 using System.Linq;
+using System.Collections.Generic;
 
 string owenPath = args[0];
 
-// Обработчик для автоматического поиска зависимостей в папках Owen Logic
 AppDomain.CurrentDomain.AssemblyResolve += (sender, resolveArgs) => {
     string dllName = new AssemblyName(resolveArgs.Name).Name + ".dll";
-    
-    // Список путей для поиска
-    string[] searchPaths = {
-        owenPath,
-        Path.Combine(owenPath, "ST"),
-        Path.Combine(owenPath, "ProjectJsonConverter"),
-        Path.Combine(owenPath, "ProjectJsonConverter", "ST")
-    };
-
+    string[] searchPaths = { owenPath, Path.Combine(owenPath, "ST"), Path.Combine(owenPath, "ProjectJsonConverter") };
     foreach (var path in searchPaths) {
         string fullPath = Path.Combine(path, dllName);
-        if (File.Exists(fullPath)) {
-            return Assembly.LoadFrom(fullPath);
-        }
+        if (File.Exists(fullPath)) return Assembly.LoadFrom(fullPath);
     }
     return null;
 };
 
+void InspectType(Assembly asm, string typeName) {
+    var type = asm.GetType(typeName);
+    if (type == null) return;
+    Console.WriteLine($"\n--- Methods in {typeName} ---");
+    foreach (var m in type.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static)) {
+        var paramsInfo = string.Join(", ", m.GetParameters().Select(p => $"{p.ParameterType.Name} {p.Name}"));
+        Console.WriteLine($"{m.ReturnType.Name} {m.Name}({paramsInfo})");
+    }
+}
+
 try {
-    string dllPath = Path.Combine(owenPath, "ST", "STLanguage.dll");
-    var asm = Assembly.LoadFrom(dllPath);
-    
-    Console.WriteLine($"--- Types in {asm.FullName} ---");
-    
-    // Теперь типы должны загрузиться без ошибок
-    var types = asm.GetTypes();
-    foreach (var type in types.Where(t => t.IsPublic)) {
-        Console.WriteLine(type.FullName);
-    }
-} catch (ReflectionTypeLoadException ex) {
-    Console.WriteLine("Loader Errors:");
-    foreach (var loaderEx in ex.LoaderExceptions) {
-        Console.WriteLine($" - {loaderEx?.Message}");
-    }
+    var asmLang = Assembly.LoadFrom(Path.Combine(owenPath, "ST", "STLanguage.dll"));
+    var asmParser = Assembly.LoadFrom(Path.Combine(owenPath, "ST", "StParser.dll"));
+
+    Console.WriteLine("--- Types in StParser.dll ---");
+    foreach (var t in asmParser.GetTypes().Where(t => t.IsPublic)) Console.WriteLine(t.FullName);
+
+    InspectType(asmLang, "Owen.STLanguage.Domain.ParseService");
+    InspectType(asmLang, "Owen.STLanguage.Application.BuildSyntaxTreeService");
+    InspectType(asmParser, "StParser.StParser"); // Предполагаю наличие такого класса
+
 } catch (Exception ex) {
     Console.WriteLine($"Error: {ex.Message}");
 }
