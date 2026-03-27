@@ -23,55 +23,62 @@ AppDomain.CurrentDomain.AssemblyResolve += (sender, resolveArgs) => {
     return null;
 };
 
-try {
-    Console.WriteLine("Loading Owen Logic Core Engine...");
-    var asmLang = Assembly.LoadFrom(Path.Combine(owenPath, "ST", "STLanguage.dll"));
-    var asmParser = Assembly.LoadFrom(Path.Combine(owenPath, "ST", "StParser.dll"));
+void RunSyntaxOnly(string owenPath, string stFile) {
+    Console.WriteLine("--- Running Syntax-Only Check ---");
+    try {
+        var asmParser = Assembly.LoadFrom(Path.Combine(owenPath, "ST", "StParser.dll"));
+        var lexerType = asmParser.GetType("StParser.Lexer");
+        var parserType = asmParser.GetType("StParser.Parsers.Parser");
+        
+        var lexer = Activator.CreateInstance(lexerType);
+        var parser = Activator.CreateInstance(parserType);
 
-    // 1. Создаем StaticAnalyzer (он нужен для ParseService)
-    var staticAnalyzerType = asmLang.GetType("Owen.STLanguage.Domain.Analyzers.StaticAnalyzer");
-    // У StaticAnalyzer может быть конструктор с параметрами, попробуем найти самый простой
-    var staticAnalyzer = Activator.CreateInstance(staticAnalyzerType);
+        string sourceCode = File.ReadAllText(stFile);
 
-    // 2. Создаем ParseService, передавая ему StaticAnalyzer
-    var parseServiceType = asmLang.GetType("Owen.STLanguage.Domain.ParseService");
-    var parseService = Activator.CreateInstance(parseServiceType, new object[] { staticAnalyzer });
+        // ОЧЕНЬ ВАЖНО: Owen Logic Lexer может возвращать комментарии как токены.
+        // Мы попробуем отфильтровать их перед парсингом, если парсер на них ругается.
+        var analyzeMethod = lexerType.GetMethod("Analyze", new[] { typeof(string) });
+        var tokens = analyzeMethod.Invoke(lexer, new object[] { sourceCode }) as IEnumerable;
 
-    // 3. Читаем код
-    string sourceCode = File.ReadAllText(stFile);
+        if (tokens != null) {
+            // Пытаемся вызвать парсинг
+            var parseMethod = parserType.GetMethods().FirstOrDefault(m => m.Name == "Parse" && m.GetParameters().Length == 2);
+            var tree = parseMethod.Invoke(parser, new object[] { tokens, sourceCode });
 
-    // 4. Вызываем ParseSourceCode
-    Console.WriteLine("Running Deep Semantic Analysis...");
-    var parseMethod = parseServiceType.GetMethod("ParseSourceCode", new[] { typeof(string) });
-    var tree = parseMethod.Invoke(parseService, new object[] { sourceCode });
-
-    if (tree != null) {
-        var errorsProp = tree.GetType().GetProperty("Errors");
-        var errors = errorsProp?.GetValue(tree) as IEnumerable;
-
-        int errorCount = 0;
-        if (errors != null) {
-            foreach (var err in errors) {
-                errorCount++;
-                var line = err.GetType().GetProperty("Line")?.GetValue(err);
-                var col = err.GetType().GetProperty("Column")?.GetValue(err);
-                var msg = err.GetType().GetProperty("Message")?.GetValue(err);
-                Console.WriteLine($"LINE {line}, COL {col}: {msg}");
+            if (tree != null) {
+                var errors = tree.GetType().GetProperty("Errors")?.GetValue(tree) as IEnumerable;
+                int count = 0;
+                if (errors != null) {
+                    foreach (var err in errors) {
+                        count++;
+                        var line = err.GetType().GetProperty("Line")?.GetValue(err);
+                        var msg = err.GetType().GetProperty("Message")?.GetValue(err);
+                        Console.WriteLine($"LINE {line}: {msg}");
+                    }
+                }
+                if (count == 0) Console.WriteLine("SUCCESS: Syntax is valid.");
+                else Console.WriteLine($"FAILED: {count} syntax errors.");
             }
         }
-
-        if (errorCount == 0) {
-            Console.WriteLine("SUCCESS: Full check passed.");
-        } else {
-            Console.WriteLine($"FAILED: {errorCount} errors found.");
-        }
+    } catch (Exception ex) {
+        Console.WriteLine($"Syntax Check Error: {ex.Message}");
     }
+}
+
+try {
+    var asmLang = Assembly.LoadFrom(Path.Combine(owenPath, "ST", "STLanguage.dll"));
+    var staticAnalyzerType = asmLang.GetType("Owen.STLanguage.Domain.Analyzers.StaticAnalyzer");
+
+    Console.WriteLine($"--- Inspecting StaticAnalyzer constructors ---");
+    foreach (var ctor in staticAnalyzerType.GetConstructors()) {
+        Console.WriteLine("Constructor found with params: " + string.Join(", ", ctor.GetParameters().Select(p => p.ParameterType.Name)));
+    }
+
+    // Пока мы не знаем как создать StaticAnalyzer со всеми зависимостями, 
+    // запускаем гарантированный синтаксический чек
+    RunSyntaxOnly(owenPath, stFile);
 
 } catch (Exception ex) {
     Console.WriteLine($"\n!!! ERROR: {ex.Message} !!!");
-    if (ex.InnerException != null) Console.WriteLine($"Inner: {ex.InnerException.Message}");
-    
-    // Если не удалось запустить сложный анализатор, откатываемся к простому, но с фиксом комментариев
-    Console.WriteLine("\nFalling back to Syntax-only check...");
-    // (Тут будет код из прошлой версии, если этот упадет)
+    RunSyntaxOnly(owenPath, stFile);
 }
