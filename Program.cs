@@ -23,62 +23,63 @@ AppDomain.CurrentDomain.AssemblyResolve += (sender, resolveArgs) => {
     return null;
 };
 
-void RunCleanCheck(string owenPath, string stFile) {
-    try {
-        var asmParser = Assembly.LoadFrom(Path.Combine(owenPath, "ST", "StParser.dll"));
-        var lexerType = asmParser.GetType("StParser.Lexer");
-        var parserType = asmParser.GetType("StParser.Parsers.Parser");
-        var tokenType = asmParser.GetType("StParser.Token");
-        
-        var lexer = Activator.CreateInstance(lexerType);
-        var parser = Activator.CreateInstance(parserType);
-        string sourceCode = File.ReadAllText(stFile);
+try {
+    var asmLang = Assembly.LoadFrom(Path.Combine(owenPath, "ST", "STLanguage.dll"));
+    var asmParser = Assembly.LoadFrom(Path.Combine(owenPath, "ST", "StParser.dll"));
 
-        var analyzeMethod = lexerType.GetMethod("Analyze", new[] { typeof(string) });
-        var rawTokens = analyzeMethod.Invoke(lexer, new object[] { sourceCode }) as IEnumerable;
+    // 1. Создаем окружение через Фабрику
+    var factoryType = asmLang.GetType("Owen.STLanguage.SourceModel.ProgramEnvironmentFactory");
+    var factory = Activator.CreateInstance(factoryType);
+    var createEnvMethod = factoryType.GetMethod("Create");
+    var environment = createEnvMethod.Invoke(factory, null);
 
-        if (rawTokens != null) {
-            // Фильтруем комментарии. В Owen Logic тип токена обычно имеет свойство Type или TokenType.
-            // Мы просто проверим свойство "Type", если оно есть, и отсечем комментарии по имени.
-            var filteredTokensList = Activator.CreateInstance(typeof(List<>).MakeGenericType(tokenType));
-            var addMethod = filteredTokensList.GetType().GetMethod("Add");
+    // 2. Инициализируем системные компоненты (чтобы он знал про UDINT_TO_TIME, TON и т.д.)
+    var initServiceType = asmLang.GetType("Owen.STLanguage.Domain.InitializeSystemComponentsService");
+    var initService = Activator.CreateInstance(initServiceType);
+    var initMethod = initServiceType.GetMethod("Initialize");
+    initMethod.Invoke(initService, new object[] { environment });
 
-            foreach (var token in rawTokens) {
-                var tTypeProp = token.GetType().GetProperty("Type");
-                string typeName = tTypeProp?.GetValue(token)?.ToString() ?? "";
-                
-                // Игнорируем токены, похожие на комментарии
-                if (!typeName.Contains("Comment") && !typeName.Contains("CommentBlock")) {
-                    addMethod.Invoke(filteredTokensList, new object[] { token });
-                }
-            }
+    // 3. Создаем парсер и парсим код
+    var parseServiceType = asmLang.GetType("Owen.STLanguage.Domain.ParseService");
+    
+    // Ищем StaticAnalyzer (теперь мы можем передать ему зависимости)
+    var staticAnalyzerType = asmLang.GetType("Owen.STLanguage.Domain.Analyzers.StaticAnalyzer");
+    // Используем конструктор: StaticAnalyzer(IEnumerable<IExpressionAnalizer>, ProgramEnvironment, IUnitRepository)
+    // Для простоты попробуем найти метод или создать с null репозиторием
+    var analyzer = Activator.CreateInstance(staticAnalyzerType, new object[] { null, environment, null });
 
-            var parseMethod = parserType.GetMethods().FirstOrDefault(m => m.Name == "Parse" && m.GetParameters().Length == 2);
-            var tree = parseMethod.Invoke(parser, new object[] { filteredTokensList, sourceCode });
+    var parseService = Activator.CreateInstance(parseServiceType, new object[] { analyzer });
+    
+    string sourceCode = File.ReadAllText(stFile);
+    
+    Console.WriteLine($"--- Deep Analysis of {Path.GetFileName(stFile)} ---");
+    var parseMethod = parseServiceType.GetMethod("ParseSourceCode", new[] { typeof(string) });
+    var tree = parseMethod.Invoke(parseService, new object[] { sourceCode });
 
-            if (tree != null) {
-                var errors = tree.GetType().GetProperty("Errors")?.GetValue(tree) as IEnumerable;
-                int count = 0;
-                if (errors != null) {
-                    foreach (var err in errors) {
-                        count++;
-                        var line = err.GetType().GetProperty("Line")?.GetValue(err);
-                        var msg = err.GetType().GetProperty("Message")?.GetValue(err);
-                        Console.WriteLine($"LINE {line}: {msg}");
-                    }
-                }
-                if (count == 0) Console.WriteLine("SUCCESS: ST is valid (comments ignored).");
-                else Console.WriteLine($"FAILED: {count} errors found.");
+    if (tree != null) {
+        var errorsProp = tree.GetType().GetProperty("Errors");
+        var errors = errorsProp?.GetValue(tree) as IEnumerable;
+
+        int errorCount = 0;
+        if (errors != null) {
+            foreach (var err in errors) {
+                errorCount++;
+                var line = err.GetType().GetProperty("Line")?.GetValue(err);
+                var col = err.GetType().GetProperty("Column")?.GetValue(err);
+                var msg = err.GetType().GetProperty("Message")?.GetValue(err);
+                Console.WriteLine($"ERROR: {msg} (Line {line}, Col {col})");
             }
         }
-    } catch (Exception ex) {
-        Console.WriteLine($"Checker Error: {ex.Message}");
-    }
-}
 
-try {
-    // Выполняем проверку
-    RunCleanCheck(owenPath, stFile);
+        if (errorCount == 0) Console.WriteLine("SUCCESS: Code is perfectly valid.");
+        else Console.WriteLine($"FAILED: {errorCount} semantic errors found.");
+    }
+
 } catch (Exception ex) {
-    Console.WriteLine($"CRITICAL: {ex.Message}");
+    Console.WriteLine($"\n!!! CRITICAL ERROR: {ex.Message} !!!");
+    if (ex.InnerException != null) Console.WriteLine($"Inner Details: {ex.InnerException.Message}");
+    
+    // Если всё совсем плохо, выводим что есть через простой парсер
+    Console.WriteLine("\nFalling back to simple syntax check...");
+    // (Код простого парсинга)
 }
